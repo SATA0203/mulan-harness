@@ -106,6 +106,274 @@
 - **共识算法**: Raft
 - **向量数据库**: Milvus / Pinecone
 
+## 🚀 快速开始
+
+### 环境要求
+
+- Go 1.19+
+- Linux/macOS/Windows
+- （可选）Docker 20.10+
+- （可选）Kubernetes 1.20+
+
+### 安装步骤
+
+#### 方式一：从源码编译
+
+```bash
+# 克隆仓库
+git clone <repository-url>
+cd smartgateway
+
+# 编译
+go build -o smartgateway ./cmd/main.go
+
+# 验证安装
+./smartgateway -version
+```
+
+#### 方式二：使用 Go install
+
+```bash
+go install smartgateway/cmd@latest
+```
+
+#### 方式三：Docker 部署（推荐生产环境）
+
+```bash
+# 构建镜像
+docker build -t smartgateway:1.0.0 .
+
+# 运行容器
+docker run -d \
+  --name smartgateway \
+  -p 8080:8080 \
+  -v $(pwd)/config.json:/app/config.json \
+  smartgateway:1.0.0 \
+  --config /app/config.json
+```
+
+### 配置说明
+
+1. **创建配置文件**
+
+复制示例配置文件并根据实际需求修改：
+
+```bash
+cp config.example.json config.json
+```
+
+2. **最小化配置示例**
+
+```json
+{
+  "server_addr": ":8080",
+  "routes": [
+    {
+      "name": "default",
+      "path_prefix": "/",
+      "backends": [
+        {
+          "address": "http://127.0.0.1:8081",
+          "weight": 1
+        }
+      ],
+      "lb_algorithm": "round_robin"
+    }
+  ]
+}
+```
+
+3. **启动服务**
+
+```bash
+# 使用配置文件启动
+./smartgateway --config config.json
+
+# 或使用默认配置启动
+./smartgateway
+```
+
+4. **验证服务**
+
+```bash
+# 检查服务状态
+curl http://localhost:8080/health
+
+# 查看版本信息
+./smartgateway --version
+```
+
+### 命令行参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `-config` | 配置文件路径 | 无（使用内置默认配置） |
+| `-version` | 显示版本号 | - |
+| `-help` | 显示帮助信息 | - |
+
+## 📡 API 文档
+
+### 网关核心 API
+
+SmartGateway 作为反向代理网关，透明转发请求到后端服务。以下是网关自身提供的管理接口：
+
+#### 1. 健康检查接口
+
+**GET** `/health`
+
+检查网关及后端服务的健康状态。
+
+**响应示例：**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "backends": {
+    "api-service": [
+      {"address": "http://127.0.0.1:8081", "status": "healthy"},
+      {"address": "http://127.0.0.1:8082", "status": "healthy"}
+    ]
+  }
+}
+```
+
+**状态码：**
+- `200 OK` - 服务健康
+- `503 Service Unavailable` - 服务不健康
+
+#### 2. 路由查询接口
+
+**GET** `/api/routes`
+
+获取当前所有路由配置信息。
+
+**响应示例：**
+```json
+{
+  "routes": [
+    {
+      "name": "api-service",
+      "host": "api.example.com",
+      "path_prefix": "/api",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "backends": [
+        {"address": "http://127.0.0.1:8081", "weight": 1},
+        {"address": "http://127.0.0.1:8082", "weight": 1}
+      ],
+      "lb_algorithm": "round_robin",
+      "timeout": "10s",
+      "retries": 2
+    }
+  ]
+}
+```
+
+#### 3. 配置热更新接口
+
+**PUT** `/api/config`
+
+动态更新网关配置（无需重启）。
+
+**请求体：** 完整的 GatewayConfig JSON 对象
+
+**请求示例：**
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Content-Type: application/json" \
+  -d @config.json
+```
+
+**响应示例：**
+```json
+{
+  "status": "success",
+  "message": "配置已更新",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+**状态码：**
+- `200 OK` - 配置更新成功
+- `400 Bad Request` - 配置格式错误
+- `500 Internal Server Error` - 服务器错误
+
+### 路由配置详解
+
+#### 路由匹配规则
+
+SmartGateway 支持多种路由匹配方式：
+
+| 匹配类型 | 配置字段 | 说明 | 示例 |
+|---------|---------|------|------|
+| 精确路径 | `path` | 完全匹配请求路径 | `/api/users` |
+| 前缀匹配 | `path_prefix` | 匹配指定前缀的路径 | `/api` |
+| 通配符路径 | `path` (含 `*`) | 正则风格匹配 | `/api/*/details` |
+| Host 匹配 | `host` | 匹配请求 Host | `api.example.com` |
+| Host 通配符 | `host` (含 `*`) | 子域名匹配 | `*.example.com` |
+| Method 匹配 | `methods` | 匹配 HTTP 方法 | `["GET", "POST"]` |
+| Header 匹配 | `headers` | 匹配请求头 | `{"X-API-Version": "v2"}` |
+
+#### 负载均衡算法
+
+| 算法 | 配置值 | 说明 | 适用场景 |
+|------|--------|------|---------|
+| 轮询 | `round_robin` | 按顺序轮流分配请求 | 后端性能相近 |
+| 随机 | `random` | 随机选择后端 | 简单场景 |
+| 最少连接 | `least_conn` | 选择当前连接数最少的后端 | 长连接场景 |
+| 一致性哈希 | `consistent_hash` | 基于 IP/Key 的哈希分配 | 需要会话保持 |
+
+#### 高级配置选项
+
+```json
+{
+  "rate_limit": {
+    "enabled": true,
+    "qps": 1000,
+    "burst": 2000,
+    "key_type": "ip"
+  },
+  "circuit_breaker": {
+    "enabled": true,
+    "threshold": 5,
+    "window": "30s",
+    "half_open_count": 3,
+    "timeout": "60s"
+  },
+  "auth": {
+    "enabled": true,
+    "type": "jwt",
+    "secret": "your-secret-key"
+  },
+  "health_check": {
+    "enabled": true,
+    "interval": "10s",
+    "timeout": "5s",
+    "unhealthy_threshold": 3,
+    "healthy_threshold": 2,
+    "path": "/health"
+  }
+}
+```
+
+### 日志格式
+
+SmartGateway 提供结构化访问日志（JSON 格式）：
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "method": "GET",
+  "path": "/api/users",
+  "host": "api.example.com",
+  "remote_addr": "192.168.1.100",
+  "user_agent": "Mozilla/5.0...",
+  "status_code": 200,
+  "duration_ms": 45,
+  "upstream_addr": "http://127.0.0.1:8081",
+  "response_bytes": 1024
+}
+```
+
 ## 📋 适用场景
 
 - ✅ 金融信贷审核与风控
