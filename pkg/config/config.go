@@ -84,6 +84,9 @@ type GatewayConfig struct {
 	Plugins       []PluginConfig      `json:"plugins,omitempty"`
 	Log           LogConfig           `json:"log,omitempty"`
 	HealthCheck   HealthCheckConfig   `json:"health_check,omitempty"`
+	Harness       HarnessConfig       `json:"harness,omitempty"`
+	Agent         AgentConfig         `json:"agent,omitempty"`
+	Evolution     EvolutionConfig     `json:"evolution,omitempty"`
 }
 
 // ACLConfig 访问控制配置
@@ -92,6 +95,31 @@ type ACLConfig struct {
 	Whitelist     []string `json:"whitelist,omitempty"`
 	Blacklist     []string `json:"blacklist,omitempty"`
 	DefaultPolicy string   `json:"default_policy,omitempty"` // allow, deny
+}
+
+// HarnessConfig Harness 管控层配置
+type HarnessConfig struct {
+	Enabled    bool                   `json:"enabled"`
+	AuthConfig map[string]interface{} `json:"auth_config,omitempty"`
+	ComplianceConfig map[string]interface{} `json:"compliance_config,omitempty"`
+	AuditConfig      map[string]interface{} `json:"audit_config,omitempty"`
+}
+
+// AgentConfig 多 Agent 协作配置
+type AgentConfig struct {
+	Enabled       bool              `json:"enabled"`
+	PlannerStrategy string          `json:"planner_strategy,omitempty"` // sequential, parallel, dynamic
+	MaxRetries    int               `json:"max_retries,omitempty"`
+	Timeout       time.Duration     `json:"timeout,omitempty"`
+	Routes        map[string]bool   `json:"routes,omitempty"` // 启用 Agent 处理的路由
+}
+
+// EvolutionConfig 自进化底座配置
+type EvolutionConfig struct {
+	Enabled      bool          `json:"enabled"`
+	SkillLimit   int           `json:"skill_limit,omitempty"`
+	MemoryLimit  int           `json:"memory_limit,omitempty"`
+	OptimizeInterval time.Duration `json:"optimize_interval,omitempty"`
 }
 
 // HealthCheckConfig 健康检查配置

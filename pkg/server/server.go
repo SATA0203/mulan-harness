@@ -8,7 +8,20 @@ import (
 	"sync"
 	"time"
 
+	"smartgateway/pkg/agent"
+	"smartgateway/pkg/agent/coordinator"
+	"smartgateway/pkg/agent/executor"
+	"smartgateway/pkg/agent/planner"
+	"smartgateway/pkg/agent/validator"
 	"smartgateway/pkg/config"
+	"smartgateway/pkg/evolution"
+	"smartgateway/pkg/evolution/memory"
+	"smartgateway/pkg/evolution/skill"
+	"smartgateway/pkg/evolution/strategy"
+	"smartgateway/pkg/harness"
+	"smartgateway/pkg/harness/audit"
+	"smartgateway/pkg/harness/auth"
+	"smartgateway/pkg/harness/compliance"
 	"smartgateway/pkg/health"
 	"smartgateway/pkg/loadbalancer"
 	"smartgateway/pkg/logging"
@@ -35,6 +48,9 @@ type GatewayServer struct {
 	circuitBreaker *middleware.CircuitBreaker
 	authMiddleware *middleware.AuthMiddleware
 	aclMiddleware  *middleware.ACLMiddleware
+	harness        *harness.Harness
+	agent          *agent.AgentFramework
+	evolution      *evolution.SelfEvolutionBase
 	metrics        *Metrics
 	mu             sync.RWMutex
 }
@@ -161,321 +177,97 @@ func NewGatewayServer(cfgMgr *config.ConfigManager) (*GatewayServer, error) {
 	// 加载路由配置
 	if err := server.router.LoadFromConfig(cfg); err != nil {
 		return nil, fmt.Errorf("failed to load routes: %w", err)
-	}
-
-	// 注册健康检查
-	for _, routeCfg := range cfg.Routes {
-		nodes := loadbalancer.CreateBackendsFromConfig(routeCfg.Backends)
-		for _, node := range nodes {
-			server.healthChecker.RegisterBackend(node)
-		}
-	}
-
-	return server, nil
+// 初始化 Harness 管控层
+if cfg.Harness.Enabled {
+harnessCfg := harness.Config{
+AuthConfig: auth.Config{
+Enabled:       true,
+AllowedRoles:  []string{"admin", "user"},
+DeniedRoles:   []string{},
+RequireAuth:   false,
+DefaultPolicy: "allow",
+},
+ComplianceConfig: compliance.Config{
+Enabled:           true,
+RequiredHeaders:   []string{},
+BlockedPaths:      []string{},
+MaxBodySize:       10 << 20, // 10MB
+AllowedMethods:    []string{"GET", "POST", "PUT", "DELETE"},
+},
+AuditConfig: audit.Config{
+Enabled:        true,
+LogLevel:       "info",
+IncludeBody:    false,
+MaxBodyLength:  1024,
+RetentionDays:  30,
+OutputFormat:   "json",
+},
+}
+server.harness = harness.NewHarness(harnessCfg)
+logging.Info("Harness 管控层已初始化")
 }
 
-// updateRoutes 更新路由配置
-func (s *GatewayServer) updateRoutes(cfg *config.GatewayConfig) error {
-	return s.router.LoadFromConfig(cfg)
+// 初始化多 Agent 协作框架
+if cfg.Agent.Enabled {
+agentCfg := agent.Config{
+PlannerConfig: planner.Config{
+Enabled:       true,
+Strategy:      cfg.Agent.PlannerStrategy,
+MaxSteps:      10,
+TimeoutPerStep: int(cfg.Agent.Timeout.Seconds()),
+PriorityRules:  []string{},
+},
+ExecutorConfig: executor.Config{
+Enabled:        true,
+MaxConcurrency: 5,
+Timeout:        int(cfg.Agent.Timeout.Seconds()),
+RetryCount:     cfg.Agent.MaxRetries,
+Strategy:       "sync",
+},
+ValidatorConfig: validator.Config{
+Enabled:      true,
+Rules:        []string{},
+StrictMode:   true,
+FailFast:     true,
+},
+CoordinatorConfig: coordinator.Config{
+Enabled:        true,
+MaxHistorySize: 100,
+EnableTracking: true,
+},
+}
+server.agent = agent.NewAgentFramework(agentCfg)
+logging.Info("多 Agent 协作框架已初始化", map[string]interface{}{
+"strategy": cfg.Agent.PlannerStrategy,
+})
 }
 
-// Start 启动服务器
-func (s *GatewayServer) Start() error {
-	handler := s.buildHandler()
-
-	s.httpServer = &http.Server{
-		Addr:         s.serverConfig.Addr,
-		Handler:      handler,
-		ReadTimeout:  s.serverConfig.ReadTimeout,
-		WriteTimeout: s.serverConfig.WriteTimeout,
-		IdleTimeout:  s.serverConfig.IdleTimeout,
-	}
-
-	// 启动健康检查
-	s.healthChecker.Start()
-
-	logging.Info("Gateway server starting", map[string]interface{}{"addr": s.serverConfig.Addr})
-
-	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("server failed: %w", err)
-	}
-
-	return nil
+// 初始化自进化底座
+if cfg.Evolution.Enabled {
+evolutionCfg := evolution.Config{
+SkillConfig: skill.Config{
+Enabled:      true,
+MaxSkills:    cfg.Evolution.SkillLimit,
+AutoRegister: true,
+},
+MemoryConfig: memory.Config{
+Enabled:          true,
+MaxMemories:      cfg.Evolution.MemoryLimit,
+RetentionDays:    7,
+EnableForgetting: true,
+},
+StrategyConfig: strategy.Config{
+Enabled:          true,
+OptimizationAlgo: "rule_based",
+LearningRate:     0.01,
+MinScore:         0.8,
+},
+}
+server.evolution = evolution.NewSelfEvolutionBase(evolutionCfg)
+logging.Info("自进化底座已初始化", map[string]interface{}{
+"skill_limit":  cfg.Evolution.SkillLimit,
+"memory_limit": cfg.Evolution.MemoryLimit,
+})
 }
 
-// Shutdown 优雅停机
-func (s *GatewayServer) Shutdown(ctx context.Context) error {
-	logging.Info("Gateway server shutting down")
-
-	// 停止健康检查
-	s.healthChecker.Stop()
-
-	// 优雅关闭 HTTP 服务器
-	if s.httpServer != nil {
-		return s.httpServer.Shutdown(ctx)
-	}
-
-	return nil
-}
-
-// buildHandler 构建 HTTP 处理器
-func (s *GatewayServer) buildHandler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		startTime := time.Now()
-
-		// 提取客户端 IP
-		clientIP := getClientIP(r)
-
-		// ACL 检查
-		if s.aclMiddleware != nil && !s.aclMiddleware.Allow(clientIP) {
-			http.Error(w, "Forbidden", http.StatusForbidden)
-			s.recordMetrics(r, 403, time.Since(startTime))
-			return
-		}
-
-		// 限流检查
-		if s.rateLimiter != nil && !s.rateLimiter.Allow(clientIP) {
-			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
-			s.recordMetrics(r, 429, time.Since(startTime))
-			return
-		}
-
-		// 熔断检查
-		if s.circuitBreaker != nil && !s.circuitBreaker.Allow() {
-			http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
-			s.recordMetrics(r, 503, time.Since(startTime))
-			return
-		}
-
-		// 认证检查
-		if s.authMiddleware != nil {
-			if _, err := s.authMiddleware.Authenticate(r); err != nil {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				s.recordMetrics(r, 401, time.Since(startTime))
-				return
-			}
-		}
-
-		// 路由匹配
-		route := s.router.FindRoute(r)
-		if route == nil {
-			http.Error(w, "Not Found", http.StatusNotFound)
-			s.recordMetrics(r, 404, time.Since(startTime))
-			return
-		}
-
-		// 选择后端
-		node := route.LB.Next(r)
-		if node == nil {
-			http.Error(w, "No Available Backend", http.StatusBadGateway)
-			s.recordMetrics(r, 502, time.Since(startTime))
-			return
-		}
-
-		// 增加连接数
-		node.IncrConns()
-		defer node.DecrConns()
-
-		// 转发请求
-		s.proxyRequest(w, r, node, route)
-	})
-}
-
-// proxyRequest 代理请求到后端
-func (s *GatewayServer) proxyRequest(w http.ResponseWriter, r *http.Request, node *loadbalancer.BackendNode, route *router.Route) {
-	backendURL := node.URL
-	
-	// 创建新的请求
-	newURL := *r.URL
-	newURL.Scheme = backendURL.Scheme
-	newURL.Host = backendURL.Host
-
-	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, newURL.String(), r.Body)
-	if err != nil {
-		http.Error(w, "Internal Error", http.StatusInternalServerError)
-		if s.circuitBreaker != nil {
-			s.circuitBreaker.RecordFailure()
-		}
-		return
-	}
-
-	// 复制请求头
-	for key, values := range r.Header {
-		for _, value := range values {
-			proxyReq.Header.Add(key, value)
-		}
-	}
-
-	// 添加 X-Forwarded-* 头
-	proxyReq.Header.Set("X-Forwarded-For", getClientIP(r))
-	proxyReq.Header.Set("X-Forwarded-Proto", getProto(r))
-	proxyReq.Header.Set("X-Forwarded-Host", r.Host)
-
-	// 执行请求
-	timeout := time.Duration(route.Timeout) * time.Millisecond
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	
-	client := &http.Client{
-		Timeout: timeout,
-	}
-
-	startTime := time.Now()
-	resp, err := client.Do(proxyReq)
-	latency := time.Since(startTime)
-	
-	if err != nil {
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		if s.circuitBreaker != nil {
-			s.circuitBreaker.RecordFailure()
-		}
-		node.IncrFail()
-		return
-	}
-	defer resp.Body.Close()
-
-	// 复制响应头
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-
-	// 复制状态码
-	w.WriteHeader(resp.StatusCode)
-
-	// 复制响应体
-	io.Copy(w, resp.Body)
-
-	// 记录成功/失败
-	if s.circuitBreaker != nil {
-		if resp.StatusCode < 500 {
-			s.circuitBreaker.RecordSuccess()
-		} else {
-			s.circuitBreaker.RecordFailure()
-		}
-	}
-
-	// 记录指标
-	s.recordMetrics(r, resp.StatusCode, latency)
-	
-	// 记录访问日志
-	logging.AccessLog(&logging.AccessLogEntry{
-		Method:       r.Method,
-		Path:         r.URL.Path,
-		Host:         r.Host,
-		RemoteAddr:   getClientIP(r),
-		UserAgent:    r.UserAgent(),
-		StatusCode:   resp.StatusCode,
-		Duration:     latency.Milliseconds(),
-		UpstreamAddr: backendURL.Host,
-	})
-}
-
-// stripPrefix 剥离路径前缀
-func stripPrefix(path, prefix string) string {
-	if prefix == "" {
-		return path
-	}
-	if len(path) > len(prefix) && path[:len(prefix)] == prefix {
-		return path[len(prefix):]
-	}
-	return path
-}
-
-// getClientIP 获取客户端 IP
-func getClientIP(r *http.Request) string {
-	// 尝试 X-Forwarded-For
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		return xff
-	}
-
-	// 尝试 X-Real-IP
-	xri := r.Header.Get("X-Real-IP")
-	if xri != "" {
-		return xri
-	}
-
-	// 使用 RemoteAddr
-	return r.RemoteAddr
-}
-
-// getProto 获取请求协议
-func getProto(r *http.Request) string {
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if proto != "" {
-		return proto
-	}
-	if r.TLS != nil {
-		return "https"
-	}
-	return "http"
-}
-
-// recordMetrics 记录监控指标
-func (s *GatewayServer) recordMetrics(r *http.Request, statusCode int, latency time.Duration) {
-	routeName := "unknown"
-	if route := s.router.FindRoute(r); route != nil {
-		routeName = route.Name
-	}
-	s.metrics.RecordRequest(routeName, statusCode, latency)
-}
-
-// GetMetrics 获取监控指标
-func (s *GatewayServer) GetMetrics() map[string]interface{} {
-	return s.metrics.GetStats()
-}
-
-// GetHealthStatus 获取健康状态
-func (s *GatewayServer) GetHealthStatus() map[string]interface{} {
-	return s.healthChecker.GetAllStatuses()
-}
-
-// ReloadConfig 热更新配置
-func (s *GatewayServer) ReloadConfig(cfg *config.GatewayConfig) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// 更新路由
-	if err := s.updateRoutes(cfg); err != nil {
-		return fmt.Errorf("failed to update routes: %w", err)
-	}
-
-	// 更新限流配置
-	if s.rateLimiter != nil && cfg.RateLimit.Enabled {
-		rateConfig := middleware.RateLimiterConfig{
-			RequestsPerSecond: cfg.RateLimit.QPS,
-			BurstSize:         cfg.RateLimit.Burst,
-			Dimension:         cfg.RateLimit.KeyType,
-			Enabled:           cfg.RateLimit.Enabled,
-		}
-		s.rateLimiter.UpdateConfig(rateConfig)
-	}
-
-	// 更新熔断配置
-	if s.circuitBreaker != nil && cfg.CircuitBreaker.Enabled {
-		cbConfig := middleware.CircuitBreakerConfig{
-			FailureThreshold: cfg.CircuitBreaker.Threshold,
-			SuccessThreshold: cfg.CircuitBreaker.HalfOpenCount,
-			Timeout:          cfg.CircuitBreaker.Timeout,
-			Enabled:          cfg.CircuitBreaker.Enabled,
-		}
-		s.circuitBreaker.UpdateConfig(cbConfig)
-	}
-
-	// 更新 ACL 配置
-	if s.aclMiddleware != nil && cfg.ACL.Enabled {
-		aclConfig := middleware.ACLConfig{
-			Whitelist:     cfg.ACL.Whitelist,
-			Blacklist:     cfg.ACL.Blacklist,
-			Enabled:       cfg.ACL.Enabled,
-			DefaultPolicy: cfg.ACL.DefaultPolicy,
-		}
-		s.aclMiddleware.UpdateConfig(aclConfig)
-	}
-
-	logging.Info("Configuration reloaded successfully")
-	return nil
-}
+return server, nil
