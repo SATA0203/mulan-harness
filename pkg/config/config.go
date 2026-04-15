@@ -80,9 +80,18 @@ type GatewayConfig struct {
 	RateLimit     RateLimitConfig     `json:"rate_limit,omitempty"`
 	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
 	Auth          AuthConfig          `json:"auth,omitempty"`
+	ACL           ACLConfig           `json:"acl,omitempty"`
 	Plugins       []PluginConfig      `json:"plugins,omitempty"`
 	Log           LogConfig           `json:"log,omitempty"`
 	HealthCheck   HealthCheckConfig   `json:"health_check,omitempty"`
+}
+
+// ACLConfig 访问控制配置
+type ACLConfig struct {
+	Enabled       bool     `json:"enabled"`
+	Whitelist     []string `json:"whitelist,omitempty"`
+	Blacklist     []string `json:"blacklist,omitempty"`
+	DefaultPolicy string   `json:"default_policy,omitempty"` // allow, deny
 }
 
 // HealthCheckConfig 健康检查配置

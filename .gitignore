@@ -1,40 +1,16 @@
 ```
-# Binaries
-smartgateway
-
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
 # Dependencies
 vendor/
-
-# Logs
+# Logs and temp files
 *.log
-
+*.tmp
+*.swp
 # Environment
 .env
 .env.local
-*.env.*
-
-# Editor/IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Build artifacts
-*.o
-*.obj
-*.a
-*.so
-*.dll
-*.exe
-*.out
-
-# Go specific
-*.test
-*.prof
-cover.out
+.env.*
 ```
