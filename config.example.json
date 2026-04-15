@@ -1,0 +1,70 @@
+{
+  "server_addr": ":8080",
+  "read_timeout": "30s",
+  "write_timeout": "30s",
+  "idle_timeout": "60s",
+  "routes": [
+    {
+      "name": "api-service",
+      "host": "api.example.com",
+      "path_prefix": "/api",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "backends": [
+        {
+          "address": "http://127.0.0.1:8081",
+          "weight": 1
+        },
+        {
+          "address": "http://127.0.0.1:8082",
+          "weight": 1
+        }
+      ],
+      "lb_algorithm": "round_robin",
+      "timeout": "10s",
+      "retries": 2
+    },
+    {
+      "name": "web-service",
+      "path_prefix": "/",
+      "backends": [
+        {
+          "address": "http://127.0.0.1:3000",
+          "weight": 1
+        }
+      ],
+      "lb_algorithm": "round_robin"
+    }
+  ],
+  "rate_limit": {
+    "enabled": false,
+    "qps": 1000,
+    "burst": 2000,
+    "key_type": "ip"
+  },
+  "circuit_breaker": {
+    "enabled": false,
+    "threshold": 5,
+    "window": "30s",
+    "half_open_count": 3,
+    "timeout": "60s"
+  },
+  "auth": {
+    "enabled": false,
+    "type": "jwt",
+    "secret": ""
+  },
+  "log": {
+    "enabled": true,
+    "level": "info",
+    "format": "json",
+    "sample_rate": 1.0
+  },
+  "health_check": {
+    "enabled": true,
+    "interval": "10s",
+    "timeout": "5s",
+    "unhealthy_threshold": 3,
+    "healthy_threshold": 2,
+    "path": "/health"
+  }
+}
