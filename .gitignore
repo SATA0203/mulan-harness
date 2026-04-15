@@ -1,1 +1,32 @@
-Nothing needs to be added to the .gitignore file based on the provided changes. The only file added is DEVELOPMENT.md, which is a documentation file and should not be ignored.
+```
+# Compiled and build artifacts
+*.o
+*.obj
+*.out
+
+# Dependencies
+vendor/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# Go-specific
+*.exe
+*.dll
+*.so
+*.a
+*.dylib
+*.test
+*.prof
+cover.out
+```
