@@ -1,9 +1,7 @@
 package server
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -23,7 +21,6 @@ import (
 	"smartgateway/pkg/harness/auth"
 	"smartgateway/pkg/harness/compliance"
 	"smartgateway/pkg/health"
-	"smartgateway/pkg/loadbalancer"
 	"smartgateway/pkg/logging"
 	"smartgateway/pkg/middleware"
 	"smartgateway/pkg/router"
@@ -177,97 +174,100 @@ func NewGatewayServer(cfgMgr *config.ConfigManager) (*GatewayServer, error) {
 	// 加载路由配置
 	if err := server.router.LoadFromConfig(cfg); err != nil {
 		return nil, fmt.Errorf("failed to load routes: %w", err)
-// 初始化 Harness 管控层
-if cfg.Harness.Enabled {
-harnessCfg := harness.Config{
-AuthConfig: auth.Config{
-Enabled:       true,
-AllowedRoles:  []string{"admin", "user"},
-DeniedRoles:   []string{},
-RequireAuth:   false,
-DefaultPolicy: "allow",
-},
-ComplianceConfig: compliance.Config{
-Enabled:           true,
-RequiredHeaders:   []string{},
-BlockedPaths:      []string{},
-MaxBodySize:       10 << 20, // 10MB
-AllowedMethods:    []string{"GET", "POST", "PUT", "DELETE"},
-},
-AuditConfig: audit.Config{
-Enabled:        true,
-LogLevel:       "info",
-IncludeBody:    false,
-MaxBodyLength:  1024,
-RetentionDays:  30,
-OutputFormat:   "json",
-},
-}
-server.harness = harness.NewHarness(harnessCfg)
-logging.Info("Harness 管控层已初始化")
-}
+	}
 
-// 初始化多 Agent 协作框架
-if cfg.Agent.Enabled {
-agentCfg := agent.Config{
-PlannerConfig: planner.Config{
-Enabled:       true,
-Strategy:      cfg.Agent.PlannerStrategy,
-MaxSteps:      10,
-TimeoutPerStep: int(cfg.Agent.Timeout.Seconds()),
-PriorityRules:  []string{},
-},
-ExecutorConfig: executor.Config{
-Enabled:        true,
-MaxConcurrency: 5,
-Timeout:        int(cfg.Agent.Timeout.Seconds()),
-RetryCount:     cfg.Agent.MaxRetries,
-Strategy:       "sync",
-},
-ValidatorConfig: validator.Config{
-Enabled:      true,
-Rules:        []string{},
-StrictMode:   true,
-FailFast:     true,
-},
-CoordinatorConfig: coordinator.Config{
-Enabled:        true,
-MaxHistorySize: 100,
-EnableTracking: true,
-},
-}
-server.agent = agent.NewAgentFramework(agentCfg)
-logging.Info("多 Agent 协作框架已初始化", map[string]interface{}{
-"strategy": cfg.Agent.PlannerStrategy,
-})
-}
+	// 初始化 Harness 管控层
+	if cfg.Harness.Enabled {
+		harnessCfg := harness.Config{
+			AuthConfig: auth.Config{
+				Enabled:       true,
+				AllowedRoles:  []string{"admin", "user"},
+				DeniedRoles:   []string{},
+				RequireAuth:   false,
+				DefaultPolicy: "allow",
+			},
+			ComplianceConfig: compliance.Config{
+				Enabled:           true,
+				RequiredHeaders:   []string{},
+				BlockedPaths:      []string{},
+				MaxBodySize:       10 << 20, // 10MB
+				AllowedMethods:    []string{"GET", "POST", "PUT", "DELETE"},
+			},
+			AuditConfig: audit.Config{
+				Enabled:        true,
+				LogLevel:       "info",
+				IncludeBody:    false,
+				MaxBodyLength:  1024,
+				RetentionDays:  30,
+				OutputFormat:   "json",
+			},
+		}
+		server.harness = harness.NewHarness(harnessCfg)
+		logging.Info("Harness 管控层已初始化")
+	}
 
-// 初始化自进化底座
-if cfg.Evolution.Enabled {
-evolutionCfg := evolution.Config{
-SkillConfig: skill.Config{
-Enabled:      true,
-MaxSkills:    cfg.Evolution.SkillLimit,
-AutoRegister: true,
-},
-MemoryConfig: memory.Config{
-Enabled:          true,
-MaxMemories:      cfg.Evolution.MemoryLimit,
-RetentionDays:    7,
-EnableForgetting: true,
-},
-StrategyConfig: strategy.Config{
-Enabled:          true,
-OptimizationAlgo: "rule_based",
-LearningRate:     0.01,
-MinScore:         0.8,
-},
-}
-server.evolution = evolution.NewSelfEvolutionBase(evolutionCfg)
-logging.Info("自进化底座已初始化", map[string]interface{}{
-"skill_limit":  cfg.Evolution.SkillLimit,
-"memory_limit": cfg.Evolution.MemoryLimit,
-})
-}
+	// 初始化多 Agent 协作框架
+	if cfg.Agent.Enabled {
+		agentCfg := agent.Config{
+			PlannerConfig: planner.Config{
+				Enabled:        true,
+				Strategy:       cfg.Agent.PlannerStrategy,
+				MaxSteps:       10,
+				TimeoutPerStep: int(cfg.Agent.Timeout.Seconds()),
+				PriorityRules:  []string{},
+			},
+			ExecutorConfig: executor.Config{
+				Enabled:        true,
+				MaxConcurrency: 5,
+				Timeout:        int(cfg.Agent.Timeout.Seconds()),
+				RetryCount:     cfg.Agent.MaxRetries,
+				Strategy:       "sync",
+			},
+			ValidatorConfig: validator.Config{
+				Enabled:    true,
+				Rules:      []string{},
+				StrictMode: true,
+				FailFast:   true,
+			},
+			CoordinatorConfig: coordinator.Config{
+				Enabled:        true,
+				MaxHistorySize: 100,
+				EnableTracking: true,
+			},
+		}
+		server.agent = agent.NewAgentFramework(agentCfg)
+		logging.Info("多 Agent 协作框架已初始化", map[string]interface{}{
+			"strategy": cfg.Agent.PlannerStrategy,
+		})
+	}
 
-return server, nil
+	// 初始化自进化底座
+	if cfg.Evolution.Enabled {
+		evolutionCfg := evolution.Config{
+			SkillConfig: skill.Config{
+				Enabled:      true,
+				MaxSkills:    cfg.Evolution.SkillLimit,
+				AutoRegister: true,
+			},
+			MemoryConfig: memory.Config{
+				Enabled:          true,
+				MaxMemories:      cfg.Evolution.MemoryLimit,
+				RetentionDays:    7,
+				EnableForgetting: true,
+						},
+			StrategyConfig: strategy.Config{
+				Enabled:          true,
+				OptimizationAlgo: "rule_based",
+				LearningRate:     0.01,
+				MinScore:         0.8,
+			},
+		}
+		server.evolution = evolution.NewSelfEvolutionBase(evolutionCfg)
+		logging.Info("自进化底座已初始化", map[string]interface{}{
+			"skill_limit":  cfg.Evolution.SkillLimit,
+			"memory_limit": cfg.Evolution.MemoryLimit,
+		})
+	}
+
+	return server, nil
+}
